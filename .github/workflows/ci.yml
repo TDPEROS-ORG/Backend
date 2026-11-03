@@ -1,0 +1,37 @@
+name: Backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Credencial temporal
+        run: echo "VALIDATION_DB_PASSWORD=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: Construir y arrancar stack desechable
+        run: docker compose -p energia-ci -f compose.verify.yml up -d --build --wait --wait-timeout 240
+      - name: Readiness antes de crear tablas
+        run: docker compose -p energia-ci -f compose.verify.yml exec -T -e ENERGY_VERIFY_ALLOW=temporary-stack api python -m tests.verify_stack --expect-unready
+      - name: Importar SQL completo y verificar contrato
+        run: |
+          docker compose -p energia-ci -f compose.verify.yml exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot energy_storage_iot' < sql/railway_schema.sql
+          docker compose -p energia-ci -f compose.verify.yml exec -T api flask --app app check-backend
+          docker compose -p energia-ci -f compose.verify.yml exec -T api flask --app app init-db --confirm-empty
+      - name: Suite e integracion HTTP Kafka MySQL
+        run: |
+          docker compose -p energia-ci -f compose.verify.yml exec -T -e CORS_ORIGINS=http://localhost:8082 api python -m unittest discover -s tests -p 'test_*.py' -v
+          docker compose -p energia-ci -f compose.verify.yml exec -T -e ENERGY_VERIFY_ALLOW=temporary-stack api python -m tests.verify_stack
+      - name: Logs si falla
+        if: failure()
+        run: docker compose -p energia-ci -f compose.verify.yml logs --tail 100
+      - name: Limpiar stack temporal
+        if: always()
+        run: docker compose -p energia-ci -f compose.verify.yml down -v

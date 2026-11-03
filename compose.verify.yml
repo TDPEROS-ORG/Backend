@@ -1,0 +1,79 @@
+name: energia-railway-verificacion
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${VALIDATION_DB_PASSWORD:?Define VALIDATION_DB_PASSWORD}
+      MYSQL_DATABASE: energy_storage_iot
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+  kafka:
+    image: apache/kafka:4.0.2
+    user: "0"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      CLUSTER_ID: ZW5lcmd5LXJhaWx3YXktdjE
+    volumes:
+      - kafka_verify_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+  api:
+    image: energia-railway:verificacion
+    build: .
+    environment: &backend_environment
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${VALIDATION_DB_PASSWORD:?Define VALIDATION_DB_PASSWORD}
+      MYSQL_DATABASE: energy_storage_iot
+      AI_MODEL_PATH: /app/models/modelo_autonomia_residual.pkl
+      AUTH_COOKIE_SECURE: "False"
+      AUTH_COOKIE_SAMESITE: Strict
+      CORS_ORIGINS: https://operador.example.test
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TELEMETRY_TOPIC: rural-energy.telemetry.raw
+      KAFKA_CONSUMER_GROUP: energia-verificacion
+      PORT: 8080
+      TZ: UTC
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1::8080"
+  consumer:
+    image: energia-railway:verificacion
+    command: ["python", "run_kafka_consumer.py"]
+    environment: *backend_environment
+    restart: on-failure:5
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+volumes:
+  kafka_verify_data:
